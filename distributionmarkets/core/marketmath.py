@@ -112,3 +112,25 @@ def calculate_required_collateral(from_mu: float, from_sigma: float,
     """
     max_loss, _ = find_maximum_loss(from_mu, from_sigma, to_mu, to_sigma, k)
     return max_loss
+
+def calculate_maximum_k(sigma: float, b: Decimal) -> float:
+    """
+    Calculate the maximum allowable k (l2 norm constraint) given sigma and maximum payout b.
+    
+    Args:
+        sigma: Standard deviation of the distribution (float)
+        b: Maximum payout allowed (Decimal)
+    
+    Returns:
+        Maximum allowable k value that ensures maximum payout constraint is satisfied (float)
+    
+    Note: While b is a Decimal as it represents currency, k is returned as a float
+    as it's a mathematical scaling factor, not a currency amount.
+    """
+    if sigma <= 0:
+        raise ValueError("sigma must be positive")
+    if b <= 0:
+        raise ValueError("maximum payout must be positive")
+        
+    b_float = float(b)  # Convert Decimal to float for numpy operations
+    return b_float * np.sqrt(sigma * np.sqrt(np.pi))

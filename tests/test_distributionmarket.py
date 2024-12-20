@@ -22,9 +22,9 @@ def market(ledger, event_log):
 def market_params():
     return {
         "lp_address": "lp_1",
-        "initial_mean": 100.0,
+        "initial_mean": 95.0,
         "initial_std_dev": 10.0,
-        "initial_backing": Decimal('1000')
+        "initial_backing": Decimal('50')
     }
 
 @pytest.fixture
@@ -123,7 +123,7 @@ def test_settlement_after_initialization(market, market_params, funded_ledger):
     initial_lp_balance = funded_ledger.balance_of(market_params["lp_address"])
     settlement = market.settle_trader_position(position_id)
     assert settlement["recipient"] == market_params["lp_address"]
-    
+   
     # Check LP balance increased after trader position settlement
     new_lp_balance = funded_ledger.balance_of(market_params["lp_address"])
     assert new_lp_balance > initial_lp_balance
@@ -131,7 +131,9 @@ def test_settlement_after_initialization(market, market_params, funded_ledger):
     # Test LP position settlement
     initial_lp_token_balance = market.balanceOf(market_params["lp_address"])
     lp_settlement = market.settle_lp_position(market_params["lp_address"])
-    
+
+    # Check that LP has received all funds back
+    assert abs(settlement["amount"] + lp_settlement["amount"] - market_params["initial_backing"]) < 0.001
     # Check LP token balance is now 0
     assert market.balanceOf(market_params["lp_address"]) == 0
     
@@ -153,3 +155,85 @@ def test_settlement_after_initialization(market, market_params, funded_ledger):
         e.params["position_id"] == position_id
         for e in events
     )
+
+def test_trade_after_lp(market, market_params, funded_ledger):
+    """Test trade execution after initial LP"""
+    # Initialize market
+    result = market.initialize_market(
+        initial_mean=market_params["initial_mean"],
+        initial_std_dev=market_params["initial_std_dev"],
+        initial_backing=market_params["initial_backing"],
+        lp_address=market_params["lp_address"]
+    )
+    
+    # Setup trader
+    trader_address = "trader_1"
+    collateral = Decimal('15')  # More than needed
+    funded_ledger.mint(trader_address, collateral)
+    
+    # Execute trade
+    trade_result = market.trade(
+        new_mean=100.0,
+        new_std_dev=10.0,
+        trader_address=trader_address,
+        max_collateral=collateral
+    )
+    
+    # Verify required collateral is close to expected value
+    assert abs(float(trade_result["required_collateral"]) - 14.8519) < 0.0001
+
+def test_trade_and_settlement(market, market_params, funded_ledger):
+    """Test complete flow with trade and settlement"""
+    # Initialize market
+    result = market.initialize_market(
+        initial_mean=market_params["initial_mean"],
+        initial_std_dev=market_params["initial_std_dev"],
+        initial_backing=market_params["initial_backing"],
+        lp_address=market_params["lp_address"]
+    )
+    
+    position_id = result["position_id"]
+    # Setup and execute trade
+    trader_address = "trader_1"
+    collateral = Decimal('15')
+    funded_ledger.mint(trader_address, collateral)
+    
+    trade_result = market.trade(
+        new_mean=100.0,
+        new_std_dev=10.0,
+        trader_address=trader_address,
+        max_collateral=collateral
+    )
+    
+    trade_position_id = trade_result["position_id"]
+    required_collateral = trade_result["required_collateral"]
+    
+    # Record balances before settlement
+    initial_trader_balance = funded_ledger.balance_of(trader_address)
+    initial_lp_balance = funded_ledger.balance_of(market_params["lp_address"])
+    
+    # Settle market
+    market.settle_market(107.6)
+    
+    # Settle trader position
+    trader_settlement = market.settle_trader_position(trade_position_id)
+    trader_payout = trader_settlement["amount"]
+    assert abs(float(trader_payout) - 29.70386) < 0.0001
+    
+    # Verify trader got collateral back
+    assert funded_ledger.balance_of(trader_address) == initial_trader_balance + trader_payout 
+    
+    # Settle LP position
+    lp_settlement = market.settle_lp_position(market_params["lp_address"])
+    lp_payout = lp_settlement["amount"]
+    assert abs(float(lp_payout) - 12.54189885875035) < 0.0001
+
+    # Settle LP trader position position_id = result["position_id"]
+    lp_trader_settlement = market.settle_trader_position(position_id)
+    lp_trader_payout = lp_trader_settlement["amount"]
+    assert abs(float(trader_payout) -  29.703860707797137) < 0.0001
+    
+    # Verify total payouts
+    total_payout = trader_payout + lp_payout + lp_trader_payout - required_collateral
+    assert total_payout < market_params["initial_backing"]
+    assert abs(float(total_payout) - 50.0) < 0.001

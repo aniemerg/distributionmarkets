@@ -1,14 +1,26 @@
-from decimal import Decimal
-from typing import Dict, Optional
-from distributionmarkets.core.marketmath import calculate_lambda, calculate_f
+from decimal import Decimal, ROUND_DOWN
+from typing import Dict, Optional, Any
+from distributionmarkets.core.marketmath import calculate_lambda, calculate_f, calculate_maximum_k, find_maximum_loss
 from distributionmarkets.core.events import Event
 
 class Position:
     """Represents a trader's position in the market"""
-    def __init__(self, owner: str, mean: float, std_dev: float):
+    def __init__(self, owner: str, 
+                 mean: float, 
+                 std_dev: float, 
+                 collateral: Decimal = Decimal(0.0),
+                 old_mean: float = 0.0,
+                 old_std_dev: float = 0.0,
+                 is_LP: bool = False
+                ):
         self.owner = owner
         self.mean = mean
         self.std_dev = std_dev
+        self.collateral = collateral
+        self.old_mean = old_mean
+        self.old_std_dev = old_std_dev
+        self.is_LP = is_LP
+        self.settled = False
 
 class DistributionMarket:
     """
@@ -59,7 +71,9 @@ class DistributionMarket:
         self.positions[position_id] = Position(
             owner=lp_address,
             mean=initial_mean,
-            std_dev=initial_std_dev
+            std_dev=initial_std_dev,
+            collateral = initial_backing,
+            is_LP = True
         )
         
         # Update market state
@@ -68,6 +82,10 @@ class DistributionMarket:
         self.total_backing = initial_backing
         self.initialized = True
         
+        # update k
+        self.k = calculate_maximum_k(initial_std_dev, initial_backing)
+        print(f"Initial k: {self.k}")
+
         # Emit event
         self.event_log.emit(Event(
             name="MarketInitialized",
@@ -82,6 +100,73 @@ class DistributionMarket:
         
         return {
             "position_id": position_id
+        }
+
+    def trade(
+        self,
+        new_mean: float,
+        new_std_dev: float,
+        trader_address: str,
+        max_collateral: Decimal
+    ) -> Dict[str, Any]:
+        """
+        Execute a trade to move market to new position
+        Returns position ID and required collateral amount
+        """
+        if not self.initialized:
+            raise ValueError("Market not initialized")
+        
+        if self.settled:
+            raise ValueError("Market already settled")
+
+        required_collateral, _ = find_maximum_loss(self.current_mean, self.current_std_dev, 
+                     new_mean, new_std_dev, self.k)
+
+        required_collateral = Decimal(str(required_collateral))
+        
+        if required_collateral > max_collateral:
+            raise ValueError("Insufficient collateral")
+            
+        # Transfer collateral
+        self.ledger.transfer(trader_address, self.address, required_collateral)
+        
+        # Create new position
+        position_id = str(self.next_position_id)
+        self.next_position_id += 1
+        
+        self.positions[position_id] = Position(
+            owner=trader_address,
+            mean=new_mean,
+            std_dev=new_std_dev,
+            collateral=required_collateral,
+            old_mean=self.current_mean,
+            old_std_dev=self.current_std_dev
+        )
+        
+        # Update market state
+        self.current_mean = new_mean
+        self.current_std_dev = new_std_dev
+
+        # update k
+        self.k = calculate_maximum_k(self.current_std_dev, self.total_backing)
+        print(f"Updated k: {self.k}")
+        
+        # Emit event
+        self.event_log.emit(Event(
+            name="Trade",
+            params={
+                "type": "Trade",
+                "position_id": position_id,
+                "trader": trader_address,
+                "new_mean": new_mean,
+                "new_std_dev": new_std_dev,
+                "collateral": float(required_collateral)
+            }
+        ))
+        
+        return {
+            "position_id": position_id,
+            "required_collateral": required_collateral
         }
 
     def balanceOf(self, address: str) -> Decimal:
@@ -127,14 +212,23 @@ class DistributionMarket:
         position = self.positions.get(position_id)
         if position is None:
             raise ValueError("Position not found")
+        
+        if position.settled:
+            raise ValueError("Position already settled.")
             
         # Calculate payout based on final value
-        lambda_val = calculate_lambda(position.std_dev, self.k)
         payout = calculate_f(self.final_value, position.mean, position.std_dev, self.k)
-        payout_amount = Decimal(str(payout))
+        if not position.is_LP:
+            payout -= calculate_f(self.final_value, position.old_mean, position.old_std_dev, self.k)
+        
+        payout_amount = Decimal(str(payout)).quantize(Decimal('0.00000000001'), rounding=ROUND_DOWN)  # 18 decimal places should be more than sufficient
+        
+        if not position.is_LP:
+            payout_amount += position.collateral
         
         # Transfer payout
         self.ledger.transfer(self.address, position.owner, payout_amount)
+        position.settled = True
         
         # Emit event
         self.event_log.emit(Event(
@@ -147,7 +241,8 @@ class DistributionMarket:
         ))
         
         return {
-            "recipient": position.owner
+            "recipient": position.owner,
+            "amount": payout_amount
         }
 
     def settle_lp_position(self, lp_address: str) -> Dict:
@@ -162,9 +257,9 @@ class DistributionMarket:
         # Calculate proportional payout of remaining funds
         total_lp_supply = self.total_lp_tokens()
         # Is it valid to assume that the contracts balance is the backing? Probably Not. 
-        remaining_funds = self.ledger.balance_of(self.address)
+        remaining_funds = self.total_backing - Decimal(calculate_f(self.final_value, self.current_mean, self.current_std_dev, self.k))
         payout = (lp_balance / total_lp_supply) * remaining_funds
-        
+
         # Transfer payout and clear LP tokens
         self.ledger.transfer(self.address, lp_address, payout)
         self.lp_balances[lp_address] = Decimal('0')
