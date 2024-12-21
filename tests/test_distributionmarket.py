@@ -182,6 +182,7 @@ def test_trade_after_lp(market, market_params, funded_ledger):
     # Verify required collateral is close to expected value
     assert abs(float(trade_result["required_collateral"]) - 14.8519) < 0.0001
 
+# Desmos: https://www.desmos.com/calculator/minuot5ho5
 def test_trade_and_settlement(market, market_params, funded_ledger):
     """Test complete flow with trade and settlement"""
     # Initialize market
@@ -217,23 +218,26 @@ def test_trade_and_settlement(market, market_params, funded_ledger):
     
     # Settle trader position
     trader_settlement = market.settle_trader_position(trade_position_id)
-    trader_payout = trader_settlement["amount"]
-    assert abs(float(trader_payout) - 29.70386) < 0.0001
+    trader_received = trader_settlement["amount"]
+    # expected trader position: required collateral + trader payout
+    expected_trader_position = float(required_collateral) + 14.8519282576
+    assert abs(float(trader_received) - expected_trader_position) < 0.0001 
     
     # Verify trader got collateral back
-    assert funded_ledger.balance_of(trader_address) == initial_trader_balance + trader_payout 
+    assert funded_ledger.balance_of(trader_address) == initial_trader_balance + trader_received 
     
     # Settle LP position
     lp_settlement = market.settle_lp_position(market_params["lp_address"])
     lp_payout = lp_settlement["amount"]
-    assert abs(float(lp_payout) - 12.54189885875035) < 0.0001
+    assert abs(float(lp_payout) - 12.5418988588) < 0.0001
 
     # Settle LP trader position position_id = result["position_id"]
     lp_trader_settlement = market.settle_trader_position(position_id)
     lp_trader_payout = lp_trader_settlement["amount"]
-    assert abs(float(trader_payout) -  29.703860707797137) < 0.0001
+    assert abs(float(lp_trader_payout) -  22.6061728837) < 0.0001
     
     # Verify total payouts
-    total_payout = trader_payout + lp_payout + lp_trader_payout - required_collateral
-    assert total_payout < market_params["initial_backing"]
-    assert abs(float(total_payout) - 50.0) < 0.001
+    total_payout = trader_received + lp_payout + lp_trader_payout
+    # expected total payouts
+    expected_total_payouts = float(market_params["initial_backing"] + required_collateral)
+    assert abs(float(total_payout) - expected_total_payouts) < 0.001 

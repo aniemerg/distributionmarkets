@@ -84,7 +84,6 @@ class DistributionMarket:
         
         # update k
         self.k = calculate_maximum_k(initial_std_dev, initial_backing)
-        print(f"Initial k: {self.k}")
 
         # Emit event
         self.event_log.emit(Event(
