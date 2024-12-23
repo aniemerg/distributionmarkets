@@ -5,6 +5,7 @@ from distributionmarkets.core.events import EventLog
 from distributionmarkets.core.ledger import Ledger
 from distributionmarkets.core.marketmath import calculate_lambda, calculate_f 
 from distributionmarkets.core.distributionmarket import DistributionMarket
+import numpy as np
 
 @pytest.fixture
 def event_log():
@@ -102,6 +103,7 @@ def test_initialize_market_twice(market, market_params, funded_ledger):
             lp_address="lp_2"
         )
 
+# desmos: https://www.desmos.com/calculator/5xquurzbwe
 def test_settlement_after_initialization(market, market_params, funded_ledger):
     """Test market settlement with just initial LP position"""
     # Initialize market
@@ -241,3 +243,50 @@ def test_trade_and_settlement(market, market_params, funded_ledger):
     # expected total payouts
     expected_total_payouts = float(market_params["initial_backing"] + required_collateral)
     assert abs(float(total_payout) - expected_total_payouts) < 0.001 
+
+# desmos: https://www.desmos.com/calculator/giueqolx40
+def test_std_dev_backing_constraint(market, market_params, funded_ledger):
+    """Test that trades are rejected when std dev violates backing constraint"""
+    # Initialize market
+    result = market.initialize_market(
+        initial_mean=market_params["initial_mean"],
+        initial_std_dev=market_params["initial_std_dev"], 
+        initial_backing=market_params["initial_backing"],
+        lp_address=market_params["lp_address"]
+    )
+    
+    # Setup trader
+    trader_address = "trader_1"
+    collateral = Decimal('20')  # More than needed
+    funded_ledger.mint(trader_address, collateral)
+    
+    # Calculate minimum allowed std dev based on current k and backing
+    # σ >= k^2 / (b^2 * sqrt(π))
+    k = market.k
+    b = float(market_params["initial_backing"])
+    min_std_dev = (k * k) / (b * b * np.sqrt(np.pi))
+    print(f"Minimum standard Deviation: {min_std_dev}")
+
+    # Try to trade with std dev below minimum - should fail
+    invalid_std_dev = 9.9  # below minimum
+    print(f"Invalid standard Deviation: {invalid_std_dev}")
+    
+    with pytest.raises(ValueError, match="Standard deviation too low"):
+        market.trade(
+            new_mean=100.0,
+            new_std_dev=invalid_std_dev,
+            trader_address=trader_address, 
+            max_collateral=collateral
+        )
+    
+    # Verify trade with valid std dev succeeds
+    valid_std_dev = 10.1  # Just above minimum
+    trade_result = market.trade(
+        new_mean=100.0,
+        new_std_dev=valid_std_dev,
+        trader_address=trader_address,
+        max_collateral=collateral
+    )
+    
+    assert "position_id" in trade_result
+    assert "required_collateral" in trade_result

@@ -1,6 +1,6 @@
 from decimal import Decimal, ROUND_DOWN
 from typing import Dict, Optional, Any
-from distributionmarkets.core.marketmath import calculate_lambda, calculate_f, calculate_maximum_k, find_maximum_loss
+from distributionmarkets.core.marketmath import calculate_lambda, calculate_f, calculate_maximum_k, find_maximum_loss, calculate_minimum_sigma
 from distributionmarkets.core.events import Event
 
 class Position:
@@ -118,6 +118,10 @@ class DistributionMarket:
         if self.settled:
             raise ValueError("Market already settled")
 
+        min_std_dev = calculate_minimum_sigma(self.k, float(self.total_backing))
+        if new_std_dev < min_std_dev:
+            raise ValueError("Standard deviation too low")
+        
         required_collateral, _ = find_maximum_loss(self.current_mean, self.current_std_dev, 
                      new_mean, new_std_dev, self.k)
 

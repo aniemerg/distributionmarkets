@@ -134,3 +134,18 @@ def calculate_maximum_k(sigma: float, b: Decimal) -> float:
         
     b_float = float(b)  # Convert Decimal to float for numpy operations
     return b_float * np.sqrt(sigma * np.sqrt(np.pi))
+
+def calculate_minimum_sigma(k: float, b: float) -> float:
+    """
+    Calculate minimum allowed standard deviation given k and backing amount.
+    
+    Args:
+        k: l2 norm constraint 
+        b: backing amount
+        
+    Returns:
+        Minimum allowed standard deviation
+    """
+    if k <= 0 or b <= 0:
+        raise ValueError("k and b must be positive")
+    return (k * k) / (b * b * np.sqrt(np.pi))
