@@ -299,6 +299,7 @@ def test_std_dev_backing_constraint(market, market_params, funded_ledger):
     assert "position_id" in trade_result
     assert "required_collateral" in trade_result
 
+# desmos: https://www.desmos.com/calculator/mthafyguaj
 def test_initialize_and_add_liquidity(market, market_params, funded_ledger):
     """Test initial LP providing liquidity followed by additional LP"""
     # Initial setup and market initialization
