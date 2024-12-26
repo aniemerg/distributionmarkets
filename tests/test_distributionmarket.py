@@ -25,7 +25,8 @@ def market_params():
         "lp_address": "lp_1",
         "initial_mean": 95.0,
         "initial_std_dev": 10.0,
-        "initial_backing": Decimal('50')
+        "initial_backing": Decimal('50'),
+        "initial_k": 210.5026039569057
     }
 
 @pytest.fixture
@@ -47,6 +48,7 @@ def test_initialize_market(market, market_params, funded_ledger):
         initial_mean=market_params["initial_mean"],
         initial_std_dev=market_params["initial_std_dev"],
         initial_backing=market_params["initial_backing"],
+        initial_k=market_params["initial_k"],
         lp_address=market_params["lp_address"]
     )
     
@@ -88,6 +90,7 @@ def test_initialize_market_twice(market, market_params, funded_ledger):
         initial_mean=market_params["initial_mean"],
         initial_std_dev=market_params["initial_std_dev"],
         initial_backing=market_params["initial_backing"],
+        initial_k=market_params["initial_k"],
         lp_address=market_params["lp_address"]
     )
     
@@ -100,6 +103,7 @@ def test_initialize_market_twice(market, market_params, funded_ledger):
             initial_mean=95.0,
             initial_std_dev=12.0,
             initial_backing=Decimal('500'),
+            initial_k=market_params["initial_k"],
             lp_address="lp_2"
         )
 
@@ -111,6 +115,7 @@ def test_settlement_after_initialization(market, market_params, funded_ledger):
         initial_mean=market_params["initial_mean"],
         initial_std_dev=market_params["initial_std_dev"],
         initial_backing=market_params["initial_backing"],
+        initial_k=market_params["initial_k"],
         lp_address=market_params["lp_address"]
     )
     
@@ -165,6 +170,7 @@ def test_trade_after_lp(market, market_params, funded_ledger):
         initial_mean=market_params["initial_mean"],
         initial_std_dev=market_params["initial_std_dev"],
         initial_backing=market_params["initial_backing"],
+        initial_k=market_params["initial_k"],
         lp_address=market_params["lp_address"]
     )
     
@@ -192,6 +198,7 @@ def test_trade_and_settlement(market, market_params, funded_ledger):
         initial_mean=market_params["initial_mean"],
         initial_std_dev=market_params["initial_std_dev"],
         initial_backing=market_params["initial_backing"],
+        initial_k=market_params["initial_k"],
         lp_address=market_params["lp_address"]
     )
     
@@ -252,6 +259,7 @@ def test_std_dev_backing_constraint(market, market_params, funded_ledger):
         initial_mean=market_params["initial_mean"],
         initial_std_dev=market_params["initial_std_dev"], 
         initial_backing=market_params["initial_backing"],
+        initial_k=market_params["initial_k"],
         lp_address=market_params["lp_address"]
     )
     
@@ -290,3 +298,107 @@ def test_std_dev_backing_constraint(market, market_params, funded_ledger):
     
     assert "position_id" in trade_result
     assert "required_collateral" in trade_result
+
+def test_initialize_and_add_liquidity(market, market_params, funded_ledger):
+    """Test initial LP providing liquidity followed by additional LP"""
+    # Initial setup and market initialization
+    initial_lp_balance = funded_ledger.balance_of(market_params["lp_address"])
+    initial_market_balance = funded_ledger.balance_of(market.address)
+    assert initial_lp_balance == market_params["initial_backing"]
+    assert initial_market_balance == 0
+
+    # Initialize market with first LP
+    result = market.initialize_market(
+        initial_mean=market_params["initial_mean"],
+        initial_std_dev=market_params["initial_std_dev"],
+        initial_backing=market_params["initial_backing"],
+        initial_k=market_params["initial_k"],
+        lp_address=market_params["lp_address"]
+    )
+    initial_position_id = result["position_id"]
+    
+    # Record state after initialization
+    initial_k = market.k
+    initial_total_backing = market.total_backing
+    initial_lp_tokens = market.total_lp_tokens()
+    
+    # Setup second LP
+    lp2_address = "lp_2"
+    additional_backing = Decimal('25')  # Half of initial backing
+    funded_ledger.mint(lp2_address, additional_backing)
+    
+    # Add liquidity from second LP
+    add_liquidity_result = market.add_liquidity(
+        lp_address=lp2_address,
+        backing_amount=additional_backing
+    )
+    
+    # Test market state after additional liquidity
+    assert market.total_backing == initial_total_backing + additional_backing
+    assert market.k == initial_k * (float(market.total_backing) / float(initial_total_backing))
+    
+    # Test LP token issuance
+    expected_new_lp_tokens = initial_lp_tokens * (additional_backing / initial_total_backing)
+    assert market.balanceOf(lp2_address) == expected_new_lp_tokens
+    
+    # Test LP trader position creation
+    new_position = market.get_position(add_liquidity_result["position_id"])
+    assert new_position["owner"] == lp2_address
+    assert new_position["mean"] == market_params["initial_mean"]
+    assert new_position["std_dev"] == market_params["initial_std_dev"]
+    
+    # Settle market and verify payouts
+    final_value = 95.0  # Equal to initial mean for simplicity
+    market.settle_market(final_value)
+    
+    # Settle initial LP position
+    initial_lp_settlement = market.settle_trader_position(initial_position_id)
+    initial_lp_payout = initial_lp_settlement["amount"]
+    
+    # Settle second LP position
+    second_lp_settlement = market.settle_trader_position(add_liquidity_result["position_id"])
+    second_lp_payout = second_lp_settlement["amount"]
+    
+    # Settle LP positions
+    first_lp_position = market.settle_lp_position(market_params["lp_address"])
+    second_lp_position = market.settle_lp_position(lp2_address)
+    
+    # Calculate total payouts for each LP
+    total_first_lp = initial_lp_payout + first_lp_position["amount"]
+    total_second_lp = second_lp_payout + second_lp_position["amount"]
+    
+    # Each LP should get exactly their initial amount back since final_value = initial_mean
+    assert abs(float(total_first_lp) - float(market_params["initial_backing"])) < 0.001
+    assert abs(float(total_second_lp) - float(additional_backing)) < 0.001
+    
+    # Total payouts should equal total initial backing
+    total_payouts = total_first_lp + total_second_lp
+    assert abs(float(total_payouts) - float(market_params["initial_backing"] + additional_backing)) < 0.001
+    
+    # Test events
+    events = market.event_log.get_events()
+    assert any(
+        e.name == "LiquidityAdded" and
+        e.params["lp_address"] == lp2_address and
+        e.params["backing_amount"] == float(additional_backing) and
+        e.params["position_id"] == add_liquidity_result["position_id"]
+        for e in events
+    )
+
+@pytest.mark.skip(reason="To be implemented")
+def test_trade_with_liquidity_addition():
+    """
+    Test that trader payouts remain correct when liquidity is added after their trade.
+    This test will demonstrate why we need to store k with each position.
+    """
+    pass
+
+@pytest.mark.skip(reason="To be implemented")
+def test_add_liquidity_insufficient_funds():
+    """Test that add_liquidity fails when LP has insufficient funds"""
+    pass
+
+@pytest.mark.skip(reason="To be implemented")
+def test_add_liquidity_to_settled_market():
+    """Test that add_liquidity fails when market is already settled"""
+    pass

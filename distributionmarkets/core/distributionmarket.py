@@ -8,6 +8,7 @@ class Position:
     def __init__(self, owner: str, 
                  mean: float, 
                  std_dev: float, 
+                 k : float,
                  collateral: Decimal = Decimal(0.0),
                  old_mean: float = 0.0,
                  old_std_dev: float = 0.0,
@@ -16,6 +17,7 @@ class Position:
         self.owner = owner
         self.mean = mean
         self.std_dev = std_dev
+        self.k = k
         self.collateral = collateral
         self.old_mean = old_mean
         self.old_std_dev = old_std_dev
@@ -53,6 +55,7 @@ class DistributionMarket:
         initial_mean: float,
         initial_std_dev: float,
         initial_backing: Decimal,
+        initial_k: float,
         lp_address: str
     ) -> Dict[str, str]:
         """Initialize market with first LP position"""
@@ -72,6 +75,7 @@ class DistributionMarket:
             owner=lp_address,
             mean=initial_mean,
             std_dev=initial_std_dev,
+            k = initial_k,
             collateral = initial_backing,
             is_LP = True
         )
@@ -83,7 +87,8 @@ class DistributionMarket:
         self.initialized = True
         
         # update k
-        self.k = calculate_maximum_k(initial_std_dev, initial_backing)
+        #self.k = calculate_maximum_k(initial_std_dev, initial_backing)
+        self.k = initial_k
 
         # Emit event
         self.event_log.emit(Event(
@@ -94,6 +99,74 @@ class DistributionMarket:
                 "initial_mean": initial_mean,
                 "initial_std_dev": initial_std_dev,
                 "backing": float(initial_backing)
+            }
+        ))
+        
+        return {
+            "position_id": position_id
+        }
+
+    def add_liquidity(
+            self,
+            lp_address: str,
+            backing_amount: Decimal
+    ) -> Dict[str, Any]:
+        """
+        Add liquidity to the market.
+        
+        Args:
+            lp_address: Address of the liquidity provider
+            backing_amount: Amount of backing to add
+            
+        Returns:
+            Dict containing position_id of the new LP position
+        """
+        if not self.initialized:
+            raise ValueError("Market not initialized")
+            
+        if self.settled:
+            raise ValueError("Market already settled")
+            
+        # Check LP has sufficient funds
+        if self.ledger.balance_of(lp_address) < backing_amount:
+            raise ValueError("Insufficient funds")
+            
+        # Transfer backing to market
+        self.ledger.transfer(lp_address, self.address, backing_amount)
+        
+        # Calculate new k based on backing ratio
+        old_backing = self.total_backing
+        self.total_backing += backing_amount
+        old_k = self.k
+        self.k = self.k * float(self.total_backing / old_backing)
+        
+        # Calculate and mint LP tokens
+        # LP gets tokens proportional to their share of total backing
+        new_lp_tokens = self.total_lp_tokens() * (backing_amount / old_backing)
+        self.lp_balances[lp_address] = self.lp_balances.get(lp_address, Decimal('0')) + new_lp_tokens
+        
+        # Create trader position at current market position
+        position_id = str(self.next_position_id)
+        self.next_position_id += 1
+        new_k = self.k - old_k 
+        
+        self.positions[position_id] = Position(
+            owner=lp_address,
+            mean=self.current_mean,
+            std_dev=self.current_std_dev,
+            k = new_k,
+            collateral=backing_amount,
+            is_LP=True
+        )
+        
+        # Emit event
+        self.event_log.emit(Event(
+            name="LiquidityAdded",
+            params={
+                "type": "LiquidityAdded",
+                "lp_address": lp_address,
+                "backing_amount": float(backing_amount),
+                "position_id": position_id
             }
         ))
         
@@ -141,6 +214,7 @@ class DistributionMarket:
             owner=trader_address,
             mean=new_mean,
             std_dev=new_std_dev,
+            k = self.k,
             collateral=required_collateral,
             old_mean=self.current_mean,
             old_std_dev=self.current_std_dev
@@ -150,9 +224,9 @@ class DistributionMarket:
         self.current_mean = new_mean
         self.current_std_dev = new_std_dev
 
-        # update k
-        self.k = calculate_maximum_k(self.current_std_dev, self.total_backing)
-        print(f"Updated k: {self.k}")
+        # update k - this is probably not desirable
+        # self.k = calculate_maximum_k(self.current_std_dev, self.total_backing)
+        # print(f"Updated k: {self.k}")
         
         # Emit event
         self.event_log.emit(Event(
@@ -220,9 +294,9 @@ class DistributionMarket:
             raise ValueError("Position already settled.")
             
         # Calculate payout based on final value
-        payout = calculate_f(self.final_value, position.mean, position.std_dev, self.k)
+        payout = calculate_f(self.final_value, position.mean, position.std_dev, position.k)
         if not position.is_LP:
-            payout -= calculate_f(self.final_value, position.old_mean, position.old_std_dev, self.k)
+            payout -= calculate_f(self.final_value, position.old_mean, position.old_std_dev, position.k)
         
         payout_amount = Decimal(str(payout)).quantize(Decimal('0.00000000001'), rounding=ROUND_DOWN)  # 18 decimal places should be more than sufficient
         
