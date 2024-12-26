@@ -25,4 +25,5 @@ pytest
 
 ## Contributing
 
-Contributions are welcome. 
+Contributions via pull requests are welcome. Please make sure to add tests for new functionality, and
+follow existing patterns for event emission.
