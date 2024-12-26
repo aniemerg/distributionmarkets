@@ -385,20 +385,103 @@ def test_initialize_and_add_liquidity(market, market_params, funded_ledger):
         for e in events
     )
 
-@pytest.mark.skip(reason="To be implemented")
-def test_trade_with_liquidity_addition():
-    """
-    Test that trader payouts remain correct when liquidity is added after their trade.
-    This test will demonstrate why we need to store k with each position.
-    """
-    pass
+def test_trade_with_liquidity_addition(market, market_params, funded_ledger):
+    """Test that trader payouts remain correct when liquidity is added after their trade"""
+    # Initialize market
+    result = market.initialize_market(
+        initial_mean=market_params["initial_mean"],
+        initial_std_dev=market_params["initial_std_dev"],
+        initial_backing=market_params["initial_backing"],
+        initial_k=market_params["initial_k"],
+        lp_address=market_params["lp_address"]
+    )
+    
+    # Setup and execute trader position
+    trader_address = "trader_1"
+    trader_collateral = Decimal('15')
+    funded_ledger.mint(trader_address, trader_collateral)
+    
+    trade_result = market.trade(
+        new_mean=100.0,  # Move mean up
+        new_std_dev=10.0,
+        trader_address=trader_address,
+        max_collateral=trader_collateral
+    )
+    trader_position_id = trade_result["position_id"]
+    required_collateral = trade_result["required_collateral"]
+    
+    # Record market state before additional liquidity
+    k_before_liquidity = market.k
+    
+    # Add additional liquidity
+    lp2_address = "lp_2"
+    additional_backing = Decimal('25')
+    funded_ledger.mint(lp2_address, additional_backing)
+    
+    market.add_liquidity(
+        lp_address=lp2_address,
+        backing_amount=additional_backing
+    )
+    
+    # Verify k increased
+    assert market.k > k_before_liquidity
+    
+    # Settle market at a profitable point for trader
+    final_value = 107.6  # Above trader's mean
+    market.settle_market(final_value)
+    
+    # Calculate expected trader payout 
+    trader_settlement = market.settle_trader_position(trader_position_id)
+    trader_payout = trader_settlement["amount"]
+    
+    # Trader's total (payout + initial collateral) should be same whether 
+    # liquidity was added or not
+    expected_total = float(required_collateral) + 14.8519282576  # From previous test
+    assert abs(float(trader_payout) - expected_total) < 0.001
 
-@pytest.mark.skip(reason="To be implemented")
-def test_add_liquidity_insufficient_funds():
+def test_add_liquidity_insufficient_funds(market, market_params, funded_ledger):
     """Test that add_liquidity fails when LP has insufficient funds"""
-    pass
-
-@pytest.mark.skip(reason="To be implemented")
-def test_add_liquidity_to_settled_market():
+    # Initialize market
+    market.initialize_market(
+        initial_mean=market_params["initial_mean"],
+        initial_std_dev=market_params["initial_std_dev"],
+        initial_backing=market_params["initial_backing"],
+        initial_k=market_params["initial_k"],
+        lp_address=market_params["lp_address"]
+    )
+    
+    # Try to add liquidity without sufficient funds
+    lp2_address = "lp_2"
+    backing_amount = Decimal('25')
+    # Don't mint funds to lp2
+    
+    with pytest.raises(ValueError, match="Insufficient funds"):
+        market.add_liquidity(
+            lp_address=lp2_address,
+            backing_amount=backing_amount
+        )
+        
+def test_add_liquidity_to_settled_market(market, market_params, funded_ledger):
     """Test that add_liquidity fails when market is already settled"""
-    pass
+    # Initialize market
+    market.initialize_market(
+        initial_mean=market_params["initial_mean"],
+        initial_std_dev=market_params["initial_std_dev"],
+        initial_backing=market_params["initial_backing"],
+        initial_k=market_params["initial_k"],
+        lp_address=market_params["lp_address"]
+    )
+    
+    # Settle market
+    market.settle_market(95.0)
+    
+    # Try to add liquidity to settled market
+    lp2_address = "lp_2"
+    backing_amount = Decimal('25')
+    funded_ledger.mint(lp2_address, backing_amount)
+    
+    with pytest.raises(ValueError, match="Market already settled"):
+        market.add_liquidity(
+            lp_address=lp2_address,
+            backing_amount=backing_amount
+        )
