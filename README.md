@@ -1,4 +1,4 @@
-# Distribution Markets
+# Distribution Markets (Python)
 
 A Python module for simulating distribution prediction markets, based on ["Distribution Markets"](https://www.paradigm.xyz/2024/12/distribution-markets) by [Dave White](https://x.com/_Dave__White_).
 
